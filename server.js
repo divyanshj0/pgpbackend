@@ -73,7 +73,7 @@ app.post('/auth/signup', async (req, res) => {
     }
     // Hash the password before saving
     const hashedPassword = await bcrypt.hash(password, 10);
-    const user = await Users.create({ username,phone, password: hashedPassword });
+    const user = await Users.create({ username,phone, password: hashedPassword,authority:'USER'});
     res.status(200).json({ message: 'User created successfully' });
   } catch (error) {
     res.status(500).json({ error: error });
@@ -92,7 +92,7 @@ app.post('/auth/login', async (req, res) => {
 
     // Create a JWT. Use a secret from your .env file in a real app!
     const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET, { expiresIn: '1d' });
-    res.status(200).json({ token });
+    res.status(200).json({ token,authority:user.authority});
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -162,6 +162,7 @@ app.post('/api/orders', protect, async (req, res) => {
 
     // 2. Create the parent Order to get a new 'billno'
     const order = await Orders.create({
+      status:false,
       UserId: userId,
     }, { transaction: t });
 

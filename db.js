@@ -41,6 +41,11 @@ const Users = sequelize.define('Users', {
         type: DataTypes.STRING,
         allowNull: false,
     },
+    authority:{
+        type:DataTypes.STRING,
+        allowNull:false,
+        defaultValue:'USER',
+    }
 },{
     timestamps:false,
 });
@@ -58,6 +63,11 @@ const Orders = sequelize.define('Orders', {
         allowNull: false,
         defaultValue: Sequelize.NOW,
     },
+    status:{
+        type:DataTypes.BOOLEAN,
+        allowNull:false,
+        defaultValue:false,
+    }
 },{
     timestamps:false,
 });

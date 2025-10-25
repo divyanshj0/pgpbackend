@@ -15,192 +15,325 @@ const PORT = 8080;
 app.use(cors()); // Allows requests from your frontend
 app.use(express.json()); // Parses incoming JSON payloads
 
+// --- MIDDLEWARE ---
+
 // Middleware to verify JWT and protect routes
 const protect = async (req, res, next) => {
-  let token;
-  if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
-    try {
-      // Get token from header (e.g., "Bearer <token>")
-      token = req.headers.authorization.split(' ')[1];
-      
-      // Verify token
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      
-      // Attach user to the request object
-      req.user = await Users.findByPk(decoded.id, {
-        attributes: { exclude: ['password'] } // Don't include the password
-      });
+    let token;
+    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+        try {
+            token = req.headers.authorization.split(' ')[1]; // Get token from header
+            const decoded = jwt.verify(token, process.env.JWT_SECRET); // Verify token
+            // Attach user to the request object, excluding password
+            req.user = await Users.findByPk(decoded.id, {
+                attributes: { exclude: ['password'] }
+            });
 
-      if (!req.user) {
-        return res.status(401).json({ error: 'User not found' });
-      }
-
-      next(); // Proceed to the endpoint logic
-    } catch (error) {
-      res.status(401).json({ error: 'Not authorized, token failed' });
+            if (!req.user) {
+                return res.status(401).json({ error: 'User not found' });
+            }
+            next(); // Proceed
+        } catch (error) {
+            console.error('Token verification failed:', error.message);
+            res.status(401).json({ error: 'Not authorized, token failed' });
+        }
+    } else {
+        res.status(401).json({ error: 'Not authorized, no token' });
     }
-  }
-
-  if (!token) {
-    res.status(401).json({ error: 'Not authorized, no token' });
-  }
 };
 
-// Define a simple root route to test the server
+// Middleware to check if the user is an Admin
+const isAdmin = (req, res, next) => {
+    if (req.user && req.user.authority === 'ADMIN') {
+        next(); // User is admin, proceed
+    } else {
+        res.status(403).json({ error: 'Forbidden: Requires admin access' }); // User is not admin
+    }
+};
+
+
+// --- ROUTES ---
+
+// Simple root route
 app.get('/', (req, res) => {
-    res.status(200).send('IoT Sensor Monitor Backend is running!');
+    res.status(200).send('PGP Backend is running!');
 });
 
-
-// Authentications API
-//1.Signup api
+// --- AUTHENTICATION ROUTES ---
+// POST /auth/signup: Register a new user
 app.post('/auth/signup', async (req, res) => {
-  try {
-    const { username,phone, password } = req.body;
+    try {
+        const { username, phone, password } = req.body; //
 
-    // 1. Check if a user with this phone already exists
-    const phoneExists = await Users.findOne({ where: { phone: phone } });
-    if (phoneExists) {
-      // If the user exists, return a 409 Conflict status
-      return res.status(409).json({ error: 'User already exists with this phone' });
-    }
+        // Check if phone or username already exists
+        const phoneExists = await Users.findOne({ where: { phone: phone } });
+        if (phoneExists) {
+            return res.status(409).json({ message: 'User already exists with this phone' }); // Changed error field to message
+        }
+        const usernameExists = await Users.findOne({ where: { username: username } });
+        if (usernameExists) {
+            return res.status(409).json({ message: 'Username is already taken' }); // Changed error field to message
+        }
 
-    // 2. Check if a user with this username already exists
-    const usernameExists = await Users.findOne({ where: { username: username } });
-    if (usernameExists) {
-      // If the username is taken, return a 409 Conflict status
-      return res.status(409).json({ error: 'Username is already taken' });
+        const hashedPassword = await bcrypt.hash(password, 10); // Hash password
+        // Create user with USER authority by default
+        await Users.create({ username, phone, password: hashedPassword, authority: 'USER' });
+        res.status(201).json({ message: 'User created successfully' }); // Changed status to 201 Created
+    } catch (error) {
+        console.error("Signup Error:", error);
+        res.status(500).json({ message: 'Internal server error during signup' }); // Changed error field to message
     }
-    // Hash the password before saving
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const user = await Users.create({ username,phone, password: hashedPassword,authority:'USER'});
-    res.status(200).json({ message: 'User created successfully' });
-  } catch (error) {
-    res.status(500).json({ error: error });
-  }
 });
 
-// POST /auth/login: Log in a user and return a JWT
+// POST /auth/login: Log in a user
 app.post('/auth/login', async (req, res) => {
-  try {
-    const {phone, password } = req.body;
-    const user = await Users.findOne({ where: { phone } });
+    try {
+        const { phone, password } = req.body; //
+        const user = await Users.findOne({ where: { phone } }); //
 
-    if (!user || !(await bcrypt.compare(password, user.password))) {
-      return res.status(401).json({ error: 'Invalid phone or password' });
+        // Check user and password
+        if (!user || !(await bcrypt.compare(password, user.password))) {
+            return res.status(401).json({ message: 'Invalid phone or password' }); // Changed error field to message
+        }
+
+        // Create JWT
+        const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET, { expiresIn: '1d' });
+        res.status(200).json({ token, authority: user.authority }); // Include authority
+    } catch (error) {
+        console.error("Login Error:", error);
+        res.status(500).json({ message: 'Internal server error during login' }); // Changed error field to message
     }
-
-    // Create a JWT. Use a secret from your .env file in a real app!
-    const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET, { expiresIn: '1d' });
-    res.status(200).json({ token,authority:user.authority});
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
 });
 
-// Get logged-in user's details
-app.get('/api/profile', protect, async (req, res) => {
-  // protect middleware already attaches user data (excluding password) to req.user
-  if (req.user) {
+// --- USER API ROUTES (Protected) ---
+const userRouter = express.Router();
+userRouter.use(protect);
+
+// GET /api/profile: Get logged-in user's details
+userRouter.get('/profile', async (req, res) => {
+    // User data is attached by 'protect' middleware
     res.status(200).json(req.user);
-  } else {
-    // This case should ideally be caught by 'protect' middleware already
-    res.status(404).json({ error: 'User not found' });
-  }
 });
 
-// Get all orders for the logged-in user (with optional date range)
-app.get('/api/orders', protect, async (req, res) => {
-  try {
-    const { startDate, endDate } = req.query;
-    const userId = req.user.id;
+// GET /api/orders: Get orders for the logged-in user
+userRouter.get('/orders', async (req, res) => {
+    try {
+        const { startDate, endDate } = req.query; //
+        const userId = req.user.id; //
+        const whereClause = { UserId: userId }; //
 
-    // Base query: always filter by the logged-in user
-    const whereClause = {
-      UserId: userId,
-    };
+        // Add date range filter if provided
+        if (startDate && endDate) {
+            const start = new Date(`${startDate}T00:00:00.000Z`); //
+            const end = new Date(`${endDate}T23:59:59.999Z`); //
+            whereClause.date = { [Op.between]: [start, end] }; //
+        }
 
-    // If startDate and endDate are provided in the URL query, add them to the filter
-    if (startDate && endDate) {
-      const start = new Date(`${startDate}T00:00:00.000Z`);
-      const end = new Date(`${endDate}T23:59:59.999Z`);
-      whereClause.date = {
-        [Op.between]: [start, end],
-      };
+        const orders = await Orders.findAll({
+            where: whereClause,
+            include: [{ model: OrderItems }], // Include items
+            order: [['date', 'DESC']], // Newest first
+        });
+        res.status(200).json(orders);
+    } catch (error) {
+        console.error('Error fetching user orders:', error);
+        res.status(500).json({ message: 'Failed to fetch orders' }); // Changed error field to message
     }
-
-    // Find all orders for this user
-    const orders = await Orders.findAll({
-      where: whereClause,
-      include: [
-        {
-          model: OrderItems, // Include the items for each order
-        },
-      ],
-      order: [['date', 'DESC']], // Show most recent orders first
-    });
-
-    res.status(200).json(orders);
-  } catch (error) {
-    console.error('Error fetching orders:', error);
-    res.status(500).json({ error: 'Failed to fetch orders' });
-  }
 });
 
-// POST /api/orders: Create a new order and its associated items
-app.post('/api/orders', protect, async (req, res) => {
-  const { items } = req.body;
-  const userId = req.user.id;
+// POST /api/orders: Create a new order
+userRouter.post('/orders', async (req, res) => {
+    const { items } = req.body; //
+    const userId = req.user.id; //
+    const t = await sequelize.transaction(); // Start transaction
 
-  const t = await sequelize.transaction();
+    try {
+        if (!items || !Array.isArray(items) || items.length === 0) {
+            await t.rollback(); // Rollback if input invalid
+            return res.status(400).json({ message: 'Request must include a non-empty "items" array' }); // Changed error field to message
+        }
 
-  try {
-    // 1. Validate the input
-    if (!items || !Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ error: 'Request must include a non-empty "items" array' });
+        // Create the Order, status defaults to false
+        const order = await Orders.create({ UserId: userId }, { transaction: t }); //
+
+        // Prepare OrderItems
+        const itemsToCreate = items.map(item => {
+            if (!item.category || !item.color || !item.quantity) {
+                throw new Error('Each item must include category, color, and quantity.'); // Will be caught and trigger rollback
+            }
+            // Ensure quantity is a positive integer
+            const quantity = parseInt(item.quantity, 10);
+            if (isNaN(quantity) || quantity <= 0) {
+                 throw new Error(`Invalid quantity "${item.quantity}" for item ${item.category} - ${item.color}. Quantity must be a positive number.`);
+            }
+            return {
+                category: item.category,
+                color: item.color, // Assuming 'color' holds the name/description
+                quantity: quantity,
+                OrderBillno: order.billno, // Link using primary key 'billno'
+            };
+        });
+
+        // Bulk create items
+        await OrderItems.bulkCreate(itemsToCreate, { transaction: t, validate: true }); // Added validation
+
+        await t.commit(); // Commit transaction
+
+        // Fetch the created order with items to return it
+        const newOrderDetails = await Orders.findByPk(order.billno, {
+            include: [OrderItems],
+        });
+
+        res.status(201).json(newOrderDetails);
+
+    } catch (error) {
+        await t.rollback(); // Rollback on any error
+        console.error('Error creating order:', error);
+        res.status(500).json({ message: error.message || 'Failed to create order' }); // Changed error field to message
     }
-
-    // 2. Create the parent Order to get a new 'billno'
-    const order = await Orders.create({
-      status:false,
-      UserId: userId,
-    }, { transaction: t });
-
-    // 3. Prepare all the OrderItems
-    // Add the new 'OrderId' (which is 'billno') to each item
-    const itemsToCreate = items.map(item => {
-      // Basic validation for each item
-      if (!item.category || !item.color || !item.quantity) {
-        throw new Error('Each item must include category, color, and quantity.');
-      }
-      return {
-        ...item,
-        OrderBillno: order.billno, // Link the item to the order we just created
-      };
-    });
-
-    // 4. Create all OrderItems in a single database query
-    await OrderItems.bulkCreate(itemsToCreate, { transaction: t });
-
-    // 5. If everything was successful, commit the transaction
-    await t.commit();
-
-    // 6. Return the newly created order, including its items
-    const newOrderDetails = await Orders.findByPk(order.billno, {
-      include: [OrderItems],
-    });
-
-    res.status(201).json(newOrderDetails);
-
-  } catch (error) {
-    // 7. If any step failed, roll back the entire transaction
-    await t.rollback();
-    console.error('Error creating order:', error);
-    res.status(500).json({ error: error.message || 'Failed to create order' });
-  }
 });
 
-// Start the server and listen for connections
+// Mount the user router
+app.use('/api', userRouter);
+
+
+// --- ADMIN API ROUTES (Protected & Admin Only) ---
+const adminRouter = express.Router();
+adminRouter.use(protect, isAdmin); // Apply JWT protection and Admin check
+
+// GET /api/admin/stats: Get dashboard statistics
+adminRouter.get('/stats', async (req, res) => {
+    try {
+        const userCount = await Users.count({
+            where:{authority:'USER'}
+        }); // Count all users
+
+        // Count orders in the last month
+        const oneMonthAgo = new Date();
+        oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1); //
+        const recentOrderCount = await Orders.count({
+            where: {
+                date: {
+                    [Op.gte]: oneMonthAgo, // Greater than or equal to one month ago
+                }
+            }
+        });
+
+        res.status(200).json({ userCount, recentOrderCount });
+    } catch (error) {
+        console.error('Error fetching admin stats:', error);
+        res.status(500).json({ message: 'Failed to fetch stats' }); // Changed error field to message
+    }
+});
+
+// GET /api/admin/orders/undelivered: Get all orders with status=false
+adminRouter.get('/orders/undelivered', async (req, res) => {
+    try {
+        const undeliveredOrders = await Orders.findAll({
+            where: { status: false }, // Filter by status
+            include: [
+                { model: OrderItems }, // Include items
+                { model: Users, attributes: ['id', 'username'] } // Include user info
+            ],
+            order: [['date', 'DESC']], // Newest first
+        });
+        res.status(200).json(undeliveredOrders);
+    } catch (error) {
+        console.error('Error fetching undelivered orders:', error);
+        res.status(500).json({ message: 'Failed to fetch undelivered orders' }); // Changed error field to message
+    }
+});
+
+// PUT /api/admin/orders/:billno/deliver: Mark an order as delivered
+adminRouter.put('/orders/:billno/deliver', async (req, res) => {
+    try {
+        const { billno } = req.params; // Get billno from URL parameter
+
+        const order = await Orders.findByPk(billno); // Find order by primary key 'billno'
+
+        if (!order) {
+            return res.status(404).json({ message: 'Order not found' }); // Changed error field to message
+        }
+
+        // Update status to true
+        order.status = true;
+        await order.save(); // Save the change
+
+        res.status(200).json({ message: `Order ${billno} marked as delivered` });
+    } catch (error) {
+        console.error('Error marking order as delivered:', error);
+        res.status(500).json({ message: 'Failed to update order status' }); // Changed error field to message
+    }
+});
+
+// GET /api/admin/users: Get a list of all users
+adminRouter.get('/users', async (req, res) => {
+    try {
+        const users = await Users.findAll({
+            where:{authority:'USER'},
+            attributes: ['id', 'username', 'phone'], // Select specific fields
+            order: [['username', 'ASC']], // Order alphabetically by username
+        });
+        res.status(200).json(users);
+    } catch (error) {
+        console.error('Error fetching users:', error);
+        res.status(500).json({ message: 'Failed to fetch users' }); // Changed error field to message
+    }
+});
+
+// GET /api/admin/users/:userId: Get details for a specific user
+adminRouter.get('/users/:userId', async (req, res) => {
+    try {
+        const { userId } = req.params;
+        const user = await Users.findByPk(userId, {
+            attributes: ['id', 'username', 'phone'], // Select specific fields
+        });
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' }); // Changed error field to message
+        }
+        res.status(200).json(user);
+    } catch (error) {
+        console.error('Error fetching user details:', error);
+        res.status(500).json({ message: 'Failed to fetch user details' }); // Changed error field to message
+    }
+});
+
+// GET /api/admin/orders: Get orders, optionally filtered by userId and date range (last month default)
+adminRouter.get('/orders', async (req, res) => {
+    try {
+        const { userId } = req.query; // Get userId from query params
+
+        if (!userId) {
+            return res.status(400).json({ message: 'UserId query parameter is required' }); // Changed error field to message
+        }
+
+        // Define the date range for the last month
+        const endDate = new Date();
+        const startDate = new Date();
+        startDate.setMonth(startDate.getMonth() - 1); //
+
+        const orders = await Orders.findAll({
+            where: {
+                UserId: userId, // Filter by the specified user
+                date: {
+                    [Op.between]: [startDate, endDate], // Filter by date range
+                }
+            },
+            include: [{ model: OrderItems }], // Include items
+            order: [['date', 'DESC']], // Newest first
+        });
+
+        res.status(200).json(orders);
+    } catch (error) {
+        console.error('Error fetching orders for user:', error);
+        res.status(500).json({ message: 'Failed to fetch orders' }); // Changed error field to message
+    }
+});
+
+// Mount the admin router
+app.use('/api/admin', adminRouter);
+
+// --- START SERVER ---
 app.listen(PORT, () => {
-    console.log(`🚀 Server is live and listening on http://localhost:${PORT}`);
+    console.log(`🚀 Server is live and listening on http://localhost:${PORT}`); //
 });

@@ -1,6 +1,6 @@
 // This line must be at the very top to load the .env file
 require('dotenv').config();
-
+require('pg');
 const { Sequelize, DataTypes } = require('sequelize');
 
 const databaseUrl = process.env.DATABASE_URL;

@@ -248,7 +248,7 @@ adminRouter.get('/orders/undelivered', async (req, res) => {
 adminRouter.put('/orders/:billno/deliver', async (req, res) => {
     try {
         const { billno } = req.params; // Get billno from URL parameter
-
+        console.log(billno);
         const order = await Orders.findByPk(billno); // Find order by primary key 'billno'
 
         if (!order) {
